@@ -40,6 +40,12 @@
 (defvar emacs-mcp--partial-input (make-hash-table :test 'eq)
   "Partial input buffer per client connection, keyed by process.")
 
+(defun emacs-mcp--user-window ()
+  "Return the window the user is actually editing in.
+During a process filter the selected window may be a minibuffer;
+`minibuffer-selected-window' gives the real editing window."
+  (or (minibuffer-selected-window) (selected-window)))
+
 (defun emacs-mcp--handle-request (request)
   "Handle a single JSON REQUEST and return a response alist."
   (let* ((method (gethash "method" request))
@@ -88,17 +94,24 @@
                     `((inserted . t))))
                  ("save_buffer"
                   (let* ((name (gethash "buffer" params))
-                         (buf (if name (get-buffer name) (current-buffer))))
-                    (if buf
-                        (with-current-buffer buf
-                          (save-buffer)
-                          `((saved . ,(buffer-name buf))))
-                      `((error . "Buffer not found")))))
+                         (buf (if name
+                                  (get-buffer name)
+                                (window-buffer (emacs-mcp--user-window)))))
+                    (cond
+                     ((not buf)
+                      `((error . "Buffer not found")))
+                     ((not (buffer-file-name buf))
+                      `((error . ,(format "Buffer %s has no file" (buffer-name buf)))))
+                     (t
+                      (with-current-buffer buf
+                        (save-buffer)
+                        `((saved . ,(buffer-name buf))))))))
                  ("get_selection"
-                  (if (use-region-p)
-                      `((selection . ,(buffer-substring-no-properties
-                                       (region-beginning) (region-end))))
-                    `((selection . :null))))
+                  (with-current-buffer (window-buffer (emacs-mcp--user-window))
+                    (if (use-region-p)
+                        `((selection . ,(buffer-substring-no-properties
+                                         (region-beginning) (region-end))))
+                      `((selection . :null)))))
                  (_
                   `((error . ,(format "Unknown method: %s" method)))))))
           `((id . ,id) (result . ,result)))
@@ -154,9 +167,9 @@
 (defun emacs-mcp-stop ()
   "Stop the MCP bridge TCP server."
   (interactive)
-  (when (and emacs-mcp-server-process
-             (process-live-p emacs-mcp-server-process))
-    (delete-process emacs-mcp-server-process)
+  (when emacs-mcp-server-process
+    (when (process-live-p emacs-mcp-server-process)
+      (delete-process emacs-mcp-server-process))
     (setq emacs-mcp-server-process nil)
     (clrhash emacs-mcp--partial-input)
     (message "MCP bridge server stopped")))

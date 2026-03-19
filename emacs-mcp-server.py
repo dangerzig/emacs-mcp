@@ -33,8 +33,21 @@ class EmacsConnection:
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        self._next_id = 0
+
+    async def _close_connection(self) -> None:
+        """Close the current connection and reset state."""
+        if self.writer and not self.writer.is_closing():
+            self.writer.close()
+            try:
+                await self.writer.wait_closed()
+            except OSError:
+                pass
+        self.reader = None
+        self.writer = None
 
     async def connect(self) -> None:
+        await self._close_connection()
         self.reader, self.writer = await asyncio.open_connection(
             self.host, self.port
         )
@@ -47,19 +60,37 @@ class EmacsConnection:
     async def request(self, method: str, **params) -> dict:
         async with self._lock:
             await self.ensure_connected()
-            msg = json.dumps({"method": method, "params": params, "id": 1})
-            self.writer.write((msg + "\n").encode())
-            await self.writer.drain()
-            line = await asyncio.wait_for(self.reader.readline(), timeout=10.0)
-            return json.loads(line.decode())
+            self._next_id += 1
+            msg = json.dumps({"method": method, "params": params, "id": self._next_id})
+            try:
+                self.writer.write((msg + "\n").encode())
+                await self.writer.drain()
+                line = await asyncio.wait_for(self.reader.readline(), timeout=10.0)
+                if not line:
+                    raise ConnectionError("Connection closed by Emacs")
+                return json.loads(line.decode())
+            except Exception:
+                await self._close_connection()
+                raise
 
     async def close(self) -> None:
-        if self.writer and not self.writer.is_closing():
-            self.writer.close()
-            await self.writer.wait_closed()
+        await self._close_connection()
 
 
 emacs = EmacsConnection()
+
+
+def _extract_error(resp: dict) -> str | None:
+    """Return an error message from a response, or None if no error."""
+    if "error" in resp:
+        err = resp["error"]
+        if isinstance(err, dict):
+            return err.get("message", str(err))
+        return str(err)
+    result = resp.get("result", {})
+    if isinstance(result, dict) and "error" in result:
+        return str(result["error"])
+    return None
 
 
 @mcp.tool()
@@ -70,12 +101,10 @@ async def eval_elisp(expression: str) -> str:
         expression: The Elisp expression to evaluate (e.g. "(+ 1 2)" or "(buffer-name)")
     """
     resp = await emacs.request("eval", expression=expression)
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
-    return result.get("value", str(result))
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    return resp.get("result", {}).get("value", str(resp.get("result")))
 
 
 @mcp.tool()
@@ -90,10 +119,10 @@ async def open_file(path: str, line: int | None = None) -> str:
     if line is not None:
         params["line"] = line
     resp = await emacs.request("open_file", **params)
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    return f"Opened {result.get('opened', path)}"
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    return f"Opened {resp.get('result', {}).get('opened', path)}"
 
 
 @mcp.tool()
@@ -105,8 +134,9 @@ async def insert_to_scratch(text: str) -> str:
         text: The text to insert into the scratch buffer
     """
     resp = await emacs.request("insert_scratch", text=text)
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
     return "Text inserted into *scratch* buffer"
 
 
@@ -118,27 +148,26 @@ async def get_buffer_content(buffer: str) -> str:
         buffer: Name of the buffer (e.g. "*scratch*" or "init.el")
     """
     resp = await emacs.request("get_buffer_content", buffer=buffer)
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
-    return result.get("content", "")
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    return resp.get("result", {}).get("content", "")
 
 
 @mcp.tool()
 async def list_buffers() -> str:
     """List all open Emacs buffers with their file paths and modification status."""
     resp = await emacs.request("list_buffers")
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    buffers = result.get("buffers", [])
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    buffers = resp.get("result", {}).get("buffers", [])
     lines = []
     for b in buffers:
         mod = " [modified]" if b.get("modified") else ""
-        file_info = f" ({b['file']})" if b.get("file") else ""
-        lines.append(f"  {b['name']}{file_info}{mod}")
+        path = b.get("file")
+        file_info = f" ({path})" if path else ""
+        lines.append(f"  {b.get('name', '???')}{file_info}{mod}")
     return f"Open buffers ({len(buffers)}):\n" + "\n".join(lines)
 
 
@@ -146,10 +175,10 @@ async def list_buffers() -> str:
 async def get_selection() -> str:
     """Get the currently selected text (active region) in Emacs."""
     resp = await emacs.request("get_selection")
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    sel = result.get("selection")
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    sel = resp.get("result", {}).get("selection")
     if sel is None:
         return "No active selection"
     return sel
@@ -166,10 +195,10 @@ async def save_buffer(buffer: str | None = None) -> str:
     if buffer is not None:
         params["buffer"] = buffer
     resp = await emacs.request("save_buffer", **params)
-    result = resp.get("result", {})
-    if "error" in resp:
-        return f"Error: {resp['error'].get('message', str(resp['error']))}"
-    return f"Saved {result.get('saved', 'buffer')}"
+    err = _extract_error(resp)
+    if err:
+        return f"Error: {err}"
+    return f"Saved {resp.get('result', {}).get('saved', 'buffer')}"
 
 
 if __name__ == "__main__":
