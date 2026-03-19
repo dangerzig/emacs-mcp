@@ -11,7 +11,7 @@ Claude Code <--stdio/JSON-RPC--> Python MCP Server <--TCP--> Emacs
 ```
 
 - **Python MCP server** (`emacs-mcp-server.py`): Speaks MCP over stdio to Claude Code, relays requests to Emacs over TCP.
-- **Emacs TCP server** (Elisp, added to `init.el`): Listens on port 9377, handles JSON requests, returns JSON responses.
+- **Emacs TCP server** (`emacs-mcp-bridge.el`): Listens on port 9377, handles JSON requests, returns JSON responses.
 
 ## Tools
 
@@ -29,7 +29,15 @@ Claude Code <--stdio/JSON-RPC--> Python MCP Server <--TCP--> Emacs
 
 ### 1. Add the Elisp TCP server to your Emacs config
 
-Add the contents of the TCP server section to your `init.el`. This creates a listener on `127.0.0.1:9377` that handles JSON requests from the Python MCP server. See the project wiki or source for the full Elisp code.
+Either load the provided file:
+
+```elisp
+(add-to-list 'load-path "/path/to/emacs-mcp")
+(require 'emacs-mcp-bridge)
+(emacs-mcp-start)
+```
+
+Or copy the contents of `emacs-mcp-bridge.el` directly into your `init.el`.
 
 ### 2. Register with Claude Code
 
@@ -62,4 +70,12 @@ Add the MCP tool names to the `allow` list in `~/.claude/settings.json`:
 
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) (handles dependencies automatically via inline script metadata)
-- Emacs with `json.el` (included in Emacs 27+)
+- Emacs 27+ (for built-in `json.el`)
+
+## License
+
+MIT
+
+## Author
+
+Dan Zigmond ([@dangerzig](https://github.com/dangerzig)) - [shmonk.com](https://shmonk.com)
