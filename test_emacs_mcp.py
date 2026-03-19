@@ -131,6 +131,9 @@ async def run_tests():
 
     # --- insert_scratch + get_buffer_content ---
     print("\ninsert_scratch + get_buffer_content:")
+    # Record frames before so we can close any new ones
+    resp = await request(reader, writer, "eval", expression="(length (frame-list))")
+    frames_before_scratch = int(resp.get("result", {}).get("value", "0"))
     test_text = "emacs-mcp test marker 7e3f9a"
     resp = await request(reader, writer, "insert_scratch", text=test_text)
     if resp.get("result", {}).get("inserted"):
@@ -144,6 +147,13 @@ async def run_tests():
         t.ok("get_buffer_content reads back inserted text")
     else:
         t.fail("get_buffer_content reads back inserted text", f"expected {test_text!r}, got {content!r}")
+
+    # Clean up: close any frame insert_scratch opened
+    await request(reader, writer, "eval", expression=f"""
+        (let ((n (length (frame-list))))
+          (when (> n {frames_before_scratch})
+            (delete-frame)))
+    """)
 
     # --- get_buffer_content error ---
     print("\nget_buffer_content error:")
@@ -182,12 +192,21 @@ async def run_tests():
 
     # --- open_file ---
     print("\nopen_file:")
+    resp = await request(reader, writer, "eval", expression="(length (frame-list))")
+    frames_before_open = int(resp.get("result", {}).get("value", "0"))
     resp = await request(reader, writer, "open_file", path="/Users/danzigmond/emacs-mcp/emacs-mcp-server.py", line=1)
     result = resp.get("result", {})
     if result.get("opened"):
         t.ok("open_file succeeds")
     else:
         t.fail("open_file succeeds", f"got {resp}")
+
+    # Clean up: close the frame open_file created
+    await request(reader, writer, "eval", expression=f"""
+        (let ((n (length (frame-list))))
+          (when (> n {frames_before_open})
+            (delete-frame)))
+    """)
 
     # --- unknown method ---
     print("\nunknown method:")
