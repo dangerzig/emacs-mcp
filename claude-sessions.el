@@ -81,7 +81,10 @@ Starts Claude with a pre-minted session id and records NAME in
   (let* ((id (downcase (string-trim (shell-command-to-string "uuidgen"))))
          (label (if (string-empty-p name) id name))
          (buf-name (format "claude-%s" label))
-         (dir (expand-file-name default-directory))
+         ;; Always start new sessions in HOME, not the current buffer's dir,
+         ;; so the session's project/cwd is predictable (see git log for why).
+         (default-directory (expand-file-name "~/"))
+         (dir default-directory)
          (frame (make-frame))
          (vterm-shell (format "claude --session-id %s" id)))
     (append-to-file
